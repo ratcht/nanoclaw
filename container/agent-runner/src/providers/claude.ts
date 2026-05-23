@@ -182,13 +182,16 @@ const postToolUseHook: HookCallback = async (input) => {
     log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    const i = input as { tool_name?: string };
+    const i = input as { tool_name?: string; tool_input?: unknown };
     const toolName = i.tool_name ?? '';
+    const raw = i.tool_input ? JSON.stringify(i.tool_input) : '';
+    const summary = raw.length > 50 ? `${raw.slice(0, 47)}...` : raw;
+    const text = summary ? `✅ [${toolName}] ${summary}` : `✅ [${toolName}]`;
     writeMessageOut({
       id: `tool-done-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'chat',
       ...getSessionRouting(),
-      content: JSON.stringify({ text: `✅ [${toolName}]` }),
+      content: JSON.stringify({ text }),
     });
   } catch (err) {
     log(`PostToolUse: failed to write tool notification: ${err instanceof Error ? err.message : String(err)}`);
