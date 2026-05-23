@@ -154,22 +154,9 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   return lines.join('\n');
 }
 
-// Map each built-in tool to the input field most useful to surface in notifications.
-const TOOL_SUMMARY_KEY: Record<string, string> = {
-  Bash: 'command',
-  Read: 'file_path',
-  Write: 'file_path',
-  Edit: 'file_path',
-  Glob: 'pattern',
-  Grep: 'pattern',
-  WebSearch: 'query',
-  WebFetch: 'url',
-};
-
-function summarizeToolInput(toolName: string, input: Record<string, unknown> | undefined): string {
+function summarizeToolInput(input: Record<string, unknown> | undefined): string {
   if (!input) return '';
-  const key = TOOL_SUMMARY_KEY[toolName];
-  const val = key !== undefined ? input[key] : Object.values(input)[0];
+  const val = Object.values(input)[0];
   if (val == null) return '';
   const s = String(val);
   return s.length > 80 ? `${s.slice(0, 77)}...` : s;
@@ -203,7 +190,7 @@ const preToolUseHook: HookCallback = async (input) => {
     log(`PreToolUse: failed to record container_state: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    const summary = summarizeToolInput(toolName, i.tool_input);
+    const summary = summarizeToolInput(i.tool_input);
     const text = summary ? `[${toolName}] ${summary}` : `[${toolName}]`;
     writeMessageOut({
       id: `tool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -217,12 +204,46 @@ const preToolUseHook: HookCallback = async (input) => {
   return { continue: true };
 };
 
-/** Clear in-flight tool on PostToolUse / PostToolUseFailure. */
-const postToolUseHook: HookCallback = async () => {
+const postToolUseHook: HookCallback = async (input) => {
   try {
     clearContainerToolInFlight();
   } catch (err) {
     log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    const i = input as { tool_name?: string };
+    const toolName = i.tool_name ?? '';
+    writeMessageOut({
+      id: `tool-done-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'chat',
+      ...getSessionRouting(),
+      content: JSON.stringify({ text: `✅ [${toolName}]` }),
+    });
+  } catch (err) {
+    log(`PostToolUse: failed to write tool notification: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { continue: true };
+};
+
+const postToolUseFailureHook: HookCallback = async (input) => {
+  try {
+    clearContainerToolInFlight();
+  } catch (err) {
+    log(`PostToolUseFailure: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    const i = input as { tool_name?: string; error?: string };
+    const toolName = i.tool_name ?? '';
+    const brief = i.error ? (i.error.length > 80 ? `${i.error.slice(0, 77)}...` : i.error) : '';
+    const text = brief ? `❌ [${toolName}] ${brief}` : `❌ [${toolName}]`;
+    writeMessageOut({
+      id: `tool-fail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'chat',
+      ...getSessionRouting(),
+      content: JSON.stringify({ text }),
+    });
+  } catch (err) {
+    log(`PostToolUseFailure: failed to write tool notification: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { continue: true };
 };
@@ -454,7 +475,7 @@ export class ClaudeProvider implements AgentProvider {
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
-          PostToolUseFailure: [{ hooks: [postToolUseHook] }],
+          PostToolUseFailure: [{ hooks: [postToolUseFailureHook] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
         },
       },
