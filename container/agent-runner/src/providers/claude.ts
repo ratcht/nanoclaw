@@ -154,6 +154,16 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   return lines.join('\n');
 }
 
+function firstStringArg(input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  for (const val of Object.values(input)) {
+    if (typeof val === 'string') {
+      return val.length > 60 ? `${val.slice(0, 57)}...` : val;
+    }
+  }
+  return '';
+}
+
 const preToolUseHook: HookCallback = async (input) => {
   const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
   const toolName = i.tool_name ?? '';
@@ -182,13 +192,15 @@ const postToolUseHook: HookCallback = async (input) => {
     log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    const i = input as { tool_name?: string };
+    const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
     const toolName = i.tool_name ?? '';
+    const summary = firstStringArg(i.tool_input);
+    const text = summary ? `✅ [${toolName}] ${summary}` : `✅ [${toolName}]`;
     writeMessageOut({
       id: `tool-done-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'chat',
       ...getSessionRouting(),
-      content: JSON.stringify({ text: `✅ [${toolName}]` }),
+      content: JSON.stringify({ text }),
     });
   } catch (err) {
     log(`PostToolUse: failed to write tool notification: ${err instanceof Error ? err.message : String(err)}`);
