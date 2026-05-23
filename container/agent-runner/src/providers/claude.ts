@@ -5,6 +5,8 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { writeMessageOut } from '../db/messages-out.js';
+import { getSessionRouting } from '../db/session-routing.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
@@ -152,12 +154,6 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   return lines.join('\n');
 }
 
-/**
- * PreToolUse hook: record the current tool + its declared timeout so the host
- * sweep can widen its stuck tolerance while Bash is running a long-declared
- * script. Defense-in-depth: if SDK_DISALLOWED_TOOLS slips through somehow,
- * block the call here instead of letting the agent hang.
- */
 const preToolUseHook: HookCallback = async (input) => {
   const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
   const toolName = i.tool_name ?? '';
@@ -179,12 +175,46 @@ const preToolUseHook: HookCallback = async (input) => {
   return { continue: true };
 };
 
-/** Clear in-flight tool on PostToolUse / PostToolUseFailure. */
-const postToolUseHook: HookCallback = async () => {
+const postToolUseHook: HookCallback = async (input) => {
   try {
     clearContainerToolInFlight();
   } catch (err) {
     log(`PostToolUse: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    const i = input as { tool_name?: string };
+    const toolName = i.tool_name ?? '';
+    writeMessageOut({
+      id: `tool-done-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'chat',
+      ...getSessionRouting(),
+      content: JSON.stringify({ text: `✅ [${toolName}]` }),
+    });
+  } catch (err) {
+    log(`PostToolUse: failed to write tool notification: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return { continue: true };
+};
+
+const postToolUseFailureHook: HookCallback = async (input) => {
+  try {
+    clearContainerToolInFlight();
+  } catch (err) {
+    log(`PostToolUseFailure: failed to clear container_state: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    const i = input as { tool_name?: string; error?: string };
+    const toolName = i.tool_name ?? '';
+    const brief = i.error ? (i.error.length > 80 ? `${i.error.slice(0, 77)}...` : i.error) : '';
+    const text = brief ? `❌ [${toolName}] ${brief}` : `❌ [${toolName}]`;
+    writeMessageOut({
+      id: `tool-fail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'chat',
+      ...getSessionRouting(),
+      content: JSON.stringify({ text }),
+    });
+  } catch (err) {
+    log(`PostToolUseFailure: failed to write tool notification: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { continue: true };
 };
@@ -416,7 +446,7 @@ export class ClaudeProvider implements AgentProvider {
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
-          PostToolUseFailure: [{ hooks: [postToolUseHook] }],
+          PostToolUseFailure: [{ hooks: [postToolUseFailureHook] }],
           PreCompact: [{ hooks: [createPreCompactHook(this.assistantName)] }],
         },
       },
